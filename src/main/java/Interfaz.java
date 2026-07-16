@@ -3,15 +3,11 @@ import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
-import javafx.scene.chart.BarChart;
-import javafx.scene.chart.CategoryAxis;
-import javafx.scene.chart.LineChart;
-import javafx.scene.chart.NumberAxis;
-import javafx.scene.chart.XYChart;
 import javafx.scene.control.Button;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ScrollPane;
+import javafx.scene.control.Slider;
 import javafx.scene.control.TextArea;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.GridPane;
@@ -26,25 +22,18 @@ import javafx.scene.shape.Rectangle;
 import javafx.stage.Stage;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * Interfaz — Capa de presentación JavaFX.
+ * Interfaz — Capa de presentación JavaFX simplificada y optimizada.
  *
  * Responsabilidades:
- *   - Construir y mostrar todos los componentes visuales.
- *   - Escuchar eventos de la simulación (SimulationListener) y
- *     reflejarlos en la UI via Platform.runLater().
- *   - Delegar el inicio / detención de la simulación a Main.
- *
- * Estructura de la ventana:
- *   ┌──────────────────────────────────────────┐
- *   │  Título + Toolbar                        │  ← top
- *   ├───────────────────┬──────────────────────┤
- *   │  Laberinto        │  Panel lateral        │  ← center
- *   │  (ScrollPane)     │  métricas / logs      │
- *   └───────────────────┴──────────────────────┘
+ *   - Construir la interfaz de usuario con controles de simulación dinámicos.
+ *   - Soportar generación dinámica de laberintos.
+ *   - Implementar el bucle visual de evolución interactivo para el AG.
  */
 public class Interfaz extends Application {
 
@@ -52,8 +41,7 @@ public class Interfaz extends Application {
     //  Constantes de diseño
     // ─────────────────────────────────────────────
 
-    private static final int     CELL_SIZE    = 32;
-    private static final int     MAX_CHART_POINTS = 60;
+    private static final int CELL_SIZE = 32;
 
     private static final Color[] AGENT_COLORS = {
             Color.web("#e63946"),  // Agente 1 — rojo
@@ -71,51 +59,38 @@ public class Interfaz extends Application {
     // Marcadores de posición de cada agente sobre la grilla
     private final Map<Integer, Circle> agents = new HashMap<>();
 
-    // Etiquetas de hilo y estado por agente
-    private final Map<Integer, Label> agentThreadLabels = new HashMap<>();
-    private final Map<Integer, Label> agentStateLabels  = new HashMap<>();
-
-    // Contadores compartidos con el listener
-    private final AtomicInteger chartTick      = new AtomicInteger();
-    private final AtomicInteger totalVisits    = new AtomicInteger();
-    private final AtomicInteger finishedAgents = new AtomicInteger();
+    // Contadores compartidos
+    private final AtomicInteger totalVisits = new AtomicInteger();
 
     // ─────────────────────────────────────────────
-    //  Componentes de la UI (asignados al construir)
+    //  Componentes de la UI
     // ─────────────────────────────────────────────
 
-    private Label    statusLabel;
-    private Label    modeLabel;
-    private Label    stepsLabel;
-    private Label    activeLabel;
-    private Label    elapsedLabel;
-    private Label    throughputLabel;
-    private Label    latencyLabel;
-    private Label    aiDecisionLabel;
-    private Label    summaryLabel;
+    private Label statusLabel;
+    private Label modeLabel;
+    private Label generationLabel;
+    private Label strategyLabel;
+    private Label stepsLabel;
+    private Label activeLabel;
+    private Label elapsedLabel;
     private TextArea logArea;
     private CheckBox aiToggle;
-    private Button   startButton;
-    private Button   stopButton;
-
-    private LineChart<Number, Number> progressChart;
-    private BarChart<String, Number>  comparisonChart;
-
-    // Series de datos para los gráficos
-    private final XYChart.Series<Number, Number> throughputSeries  = new XYChart.Series<>();
-    private final XYChart.Series<Number, Number> latencySeries     = new XYChart.Series<>();
-    private final XYChart.Series<String, Number> comparisonSeries  = new XYChart.Series<>();
+    private Button startButton;
+    private Button stopButton;
+    private Button generateButton;
+    private Slider speedSlider;
 
     // ─────────────────────────────────────────────
-    //  Estado de la simulación en curso
+    //  Estado de la simulación y GA en curso
     // ─────────────────────────────────────────────
 
     private volatile Main.SimulationHandle currentHandle;
-    private volatile boolean               stopRequestedByUser;
+    private volatile boolean stopRequestedByUser;
 
-    /** Tiempos de la última ejecución de cada modo (para el BarChart). */
-    private long lastAiMillis    = -1;
-    private long lastPlainMillis = -1;
+    private final Random random = new Random();
+    private List<int[]> currentPopulation;
+    private int currentGeneration;
+    private MazeAI.Strategy currentStrategy;
 
     // ─────────────────────────────────────────────
     //  Punto de entrada JavaFX
@@ -127,13 +102,13 @@ public class Interfaz extends Application {
         root.setPadding(new Insets(16));
         root.setStyle("-fx-background-color: linear-gradient(to bottom right, #0f172a, #111827);");
 
-        // ── Top: título + toolbar ──
-        VBox top = new VBox(10, buildTitle(), buildToolbar());
+        // ── Top: título ──
+        VBox top = new VBox(2, buildTitle());
         top.setPadding(new Insets(0, 0, 14, 0));
         root.setTop(top);
 
         // ── Centro: laberinto + panel lateral ──
-        GridPane  mazeGrid   = buildMazeGrid();
+        GridPane mazeGrid = buildMazeGrid();
         ScrollPane mazeScroll = new ScrollPane(mazeGrid);
         mazeScroll.setFitToWidth(true);
         mazeScroll.setFitToHeight(true);
@@ -141,150 +116,142 @@ public class Interfaz extends Application {
         mazeScroll.setStyle("-fx-background: transparent; -fx-background-color: transparent;");
 
         VBox sidePanel = buildSidePanel();
-        HBox content   = new HBox(16, mazeScroll, sidePanel);
+        HBox content = new HBox(16, mazeScroll, sidePanel);
         HBox.setHgrow(mazeScroll, Priority.ALWAYS);
         root.setCenter(content);
 
-        Scene scene = new Scene(root, 1320, 880);
-        stage.setTitle("Laberinto concurrente");
+        Scene scene = new Scene(root, 1080, 680);
+        stage.setTitle("Laberinto Concurrente - Aprendizaje Evolutivo");
         stage.setScene(scene);
         stage.show();
 
         resetBoard();
     }
 
-    // ─────────────────────────────────────────────
-    //  Construcción de componentes de la UI
-    // ─────────────────────────────────────────────
-
     private VBox buildTitle() {
-        Label title = new Label("Laberinto concurrente");
+        Label title = new Label("Laberinto Concurrente");
         title.setTextFill(Color.WHITE);
         title.setStyle("-fx-font-size: 24px; -fx-font-weight: bold;");
 
-        Label subtitle = new Label("Prototipo funcional con visualización de agentes, métricas y modo IA.");
+        Label subtitle = new Label("Exploración concurrente con entrenamiento de algoritmo genético en vivo.");
         subtitle.setTextFill(Color.web("#cbd5e1"));
 
         return new VBox(2, title, subtitle);
     }
 
-    private HBox buildToolbar() {
-        aiToggle = new CheckBox("IA activa");
+    private VBox buildSidePanel() {
+        // ── Panel de Controles ──
+        startButton = new Button("Iniciar");
+        startButton.setStyle("-fx-background-color: #10b981; -fx-text-fill: white; -fx-font-weight: bold;");
+        startButton.setOnAction(event -> startSimulationFlow());
+
+        stopButton = new Button("Detener");
+        stopButton.setStyle("-fx-background-color: #ef4444; -fx-text-fill: white; -fx-font-weight: bold;");
+        stopButton.setDisable(true);
+        stopButton.setOnAction(event -> stopSimulation());
+
+        generateButton = new Button("Generar Laberinto");
+        generateButton.setStyle("-fx-background-color: #3b82f6; -fx-text-fill: white; -fx-font-weight: bold;");
+        generateButton.setOnAction(event -> generateNewMaze());
+
+        aiToggle = new CheckBox("IA Activa (AG)");
         aiToggle.setSelected(true);
         aiToggle.setTextFill(Color.WHITE);
 
-        startButton = new Button("Iniciar");
-        stopButton  = new Button("Detener");
-        stopButton.setDisable(true);
+        HBox buttonBox = new HBox(10, startButton, stopButton, generateButton);
+        buttonBox.setAlignment(Pos.CENTER_LEFT);
 
-        startButton.setOnAction(event -> startSimulation());
-        stopButton.setOnAction(event  -> stopSimulation());
+        // Slider de velocidad
+        Label speedLabel = new Label("Velocidad de paso (ms):");
+        speedLabel.setTextFill(Color.web("#cbd5e1"));
+        speedSlider = new Slider(10, 300, 90);
+        speedSlider.setShowTickLabels(true);
+        speedSlider.setShowTickMarks(true);
+        Label speedValLabel = new Label("90 ms");
+        speedValLabel.setTextFill(Color.WHITE);
+        speedSlider.valueProperty().addListener((obs, oldVal, newVal) -> 
+            speedValLabel.setText(newVal.intValue() + " ms")
+        );
+        HBox speedBox = new HBox(10, speedSlider, speedValLabel);
+        speedBox.setAlignment(Pos.CENTER_LEFT);
+
+        VBox controlsCard = new VBox(10,
+                header("Controles"),
+                buttonBox,
+                aiToggle,
+                speedLabel,
+                speedBox
+        );
+        controlsCard.setPadding(new Insets(12));
+        controlsCard.setStyle("-fx-background-color: rgba(30, 41, 59, 0.6); -fx-background-radius: 12;");
+
+        // ── Panel de Métricas Simplificado ──
+        GridPane metricsGrid = new GridPane();
+        metricsGrid.setHgap(10);
+        metricsGrid.setVgap(8);
+        metricsGrid.setPadding(new Insets(10));
+
+        metricsGrid.add(metricLabel("Modo:"), 0, 0);
+        metricsGrid.add(modeLabel = metricValue("-"), 1, 0);
+
+        metricsGrid.add(metricLabel("Generación:"), 0, 1);
+        metricsGrid.add(generationLabel = metricValue("0"), 1, 1);
+
+        metricsGrid.add(metricLabel("Estrategia:"), 0, 2);
+        metricsGrid.add(strategyLabel = metricValue("-"), 1, 2);
+
+        metricsGrid.add(metricLabel("Pasos Totales:"), 0, 3);
+        metricsGrid.add(stepsLabel = metricValue("0"), 1, 3);
+
+        metricsGrid.add(metricLabel("Agentes Activos:"), 0, 4);
+        metricsGrid.add(activeLabel = metricValue("0"), 1, 4);
+
+        metricsGrid.add(metricLabel("Tiempo Transcurrido:"), 0, 5);
+        metricsGrid.add(elapsedLabel = metricValue("0 ms"), 1, 5);
 
         statusLabel = new Label("Listo");
-        statusLabel.setTextFill(Color.web("#e2e8f0"));
-        modeLabel = new Label("Modo: IA activa");
-        modeLabel.setTextFill(Color.web("#e2e8f0"));
+        statusLabel.setTextFill(Color.web("#38bdf8"));
+        statusLabel.setStyle("-fx-font-weight: bold; -fx-font-size: 14px;");
 
-        HBox toolbar = new HBox(10, startButton, stopButton, aiToggle, spacer(), statusLabel, modeLabel);
-        toolbar.setAlignment(Pos.CENTER_LEFT);
-        return toolbar;
-    }
+        VBox metricsCard = new VBox(8,
+                header("Métricas en Vivo"),
+                metricsGrid,
+                new HBox(8, metricLabel("Estado:"), statusLabel)
+        );
+        metricsCard.setPadding(new Insets(12));
+        metricsCard.setStyle("-fx-background-color: rgba(30, 41, 59, 0.6); -fx-background-radius: 12;");
 
-    private VBox buildSidePanel() {
-        // ── Métricas ──
-        VBox metrics = new VBox(6,
-                header("Métricas"),
-                metricLine("Pasos",          stepsLabel      = new Label("0")),
-                metricLine("Agentes activos", activeLabel     = new Label("0")),
-                metricLine("Tiempo",          elapsedLabel    = new Label("0 ms")),
-                metricLine("Throughput",      throughputLabel = new Label("0.0 pasos/s")),
-                metricLine("Latencia",        latencyLabel    = new Label("0.0 ms/paso")),
-                metricLine("Decisión IA",     aiDecisionLabel = new Label("-")),
-                metricLine("Resultado",       summaryLabel    = new Label("-")));
-        metrics.setPadding(new Insets(0, 0, 6, 0));
-
-        // ── Cards de agentes / hilos ──
-        VBox agentsBox = new VBox(8, header("Hilos y agentes"));
-        for (int i = 1; i <= Main.STARTS.length; i++) {
-            agentsBox.getChildren().add(agentCard(i, AGENT_COLORS[i - 1]));
-        }
-
-        // ── Gráficos ──
-        progressChart   = buildProgressChart();
-        comparisonChart = buildComparisonChart();
-
-        // ── Log de eventos concurrentes ──
+        // ── Log de Eventos ──
         logArea = new TextArea();
         logArea.setEditable(false);
         logArea.setWrapText(true);
-        logArea.setPrefRowCount(8);
-        logArea.setStyle("-fx-control-inner-background: #0b1220; -fx-text-fill: #e2e8f0;");
+        logArea.setPrefRowCount(7);
+        logArea.setStyle("-fx-control-inner-background: #0b1220; -fx-text-fill: #e2e8f0; -fx-font-family: monospace;");
         VBox.setVgrow(logArea, Priority.ALWAYS);
 
         VBox panel = new VBox(12,
-                metrics,
-                agentsBox,
-                progressChart,
-                comparisonChart,
-                header("Logs concurrentes"),
-                logArea);
-        panel.setPrefWidth(440);
+                controlsCard,
+                metricsCard,
+                header("Eventos de Simulación"),
+                logArea
+        );
+        panel.setPrefWidth(380);
         panel.setPadding(new Insets(14));
         panel.setStyle("-fx-background-color: rgba(15, 23, 42, 0.84); -fx-background-radius: 18;");
         return panel;
     }
 
-    private VBox agentCard(int agentId, Color color) {
-        Label title = new Label("Agente " + agentId);
-        title.setTextFill(Color.WHITE);
-        title.setStyle("-fx-font-weight: bold;");
-
-        Label thread = new Label("Hilo: -");
-        thread.setTextFill(Color.web("#cbd5e1"));
-        Label state = new Label("Estado: listo");
-        state.setTextFill(Color.web("#cbd5e1"));
-
-        agentThreadLabels.put(agentId, thread);
-        agentStateLabels.put(agentId, state);
-
-        VBox box = new VBox(4, title, thread, state);
-        box.setPadding(new Insets(10));
-        box.setStyle("-fx-background-color: rgba(30, 41, 59, 0.9); -fx-background-radius: 12;"
-                + " -fx-border-color: " + toWeb(color) + "; -fx-border-radius: 12; -fx-border-width: 1;");
-        return box;
+    private Label metricLabel(String text) {
+        Label l = new Label(text);
+        l.setTextFill(Color.web("#94a3b8"));
+        return l;
     }
 
-    private LineChart<Number, Number> buildProgressChart() {
-        NumberAxis xAxis = new NumberAxis();
-        xAxis.setLabel("Evento");
-        NumberAxis yAxis = new NumberAxis();
-        yAxis.setLabel("Valor");
-
-        throughputSeries.setName("Throughput");
-        latencySeries.setName("Latencia");
-
-        LineChart<Number, Number> chart = new LineChart<>(xAxis, yAxis);
-        chart.getData().addAll(throughputSeries, latencySeries);
-        chart.setCreateSymbols(false);
-        chart.setAnimated(false);
-        chart.setLegendVisible(true);
-        chart.setPrefHeight(220);
-        return chart;
-    }
-
-    private BarChart<String, Number> buildComparisonChart() {
-        CategoryAxis xAxis = new CategoryAxis();
-        xAxis.setLabel("Modo");
-        NumberAxis yAxis = new NumberAxis();
-        yAxis.setLabel("Tiempo (ms)");
-
-        comparisonSeries.setName("Ultima ejecucion");
-        BarChart<String, Number> chart = new BarChart<>(xAxis, yAxis);
-        chart.getData().add(comparisonSeries);
-        chart.setAnimated(false);
-        chart.setLegendVisible(false);
-        chart.setPrefHeight(180);
-        return chart;
+    private Label metricValue(String text) {
+        Label l = new Label(text);
+        l.setTextFill(Color.WHITE);
+        l.setStyle("-fx-font-weight: bold;");
+        return l;
     }
 
     private GridPane buildMazeGrid() {
@@ -327,18 +294,52 @@ public class Interfaz extends Application {
     }
 
     // ─────────────────────────────────────────────
-    //  Control de la simulación
+    //  Control y Flujo del AG en Vivo
     // ─────────────────────────────────────────────
 
-    private void startSimulation() {
-        // Detener cualquier simulación previa
+    private void generateNewMaze() {
+        appendLog("Generando nuevo laberinto...");
+        Main.generateNewMaze(random);
+        resetBoard();
+        appendLog("¡Nuevo laberinto listo y validado como resoluble!");
+    }
+
+    private void startSimulationFlow() {
         if (currentHandle != null) currentHandle.stop();
 
-        resetBoard();
+        stopRequestedByUser = false;
+        startButton.setDisable(true);
+        stopButton.setDisable(false);
+        generateButton.setDisable(true);
+        aiToggle.setDisable(true);
+
         boolean aiEnabled = aiToggle.isSelected();
+        modeLabel.setText(aiEnabled ? "Algoritmo Genético (Vivo)" : "Sin IA (Base)");
 
-        currentHandle = Main.startSimulation(aiEnabled, new Main.SimulationListener() {
+        if (aiEnabled) {
+            currentGeneration = 1;
+            currentPopulation = MazeAI.initializePopulation(8, random);
+            currentStrategy = MazeAI.getBestStrategy(currentPopulation, Main.MAZE, Main.STARTS, currentGeneration);
+            runGeneration();
+        } else {
+            currentGeneration = 0;
+            currentStrategy = MazeAI.baseline();
+            runSingleSimulation();
+        }
+    }
 
+    private void runGeneration() {
+        if (stopRequestedByUser) return;
+
+        Platform.runLater(() -> {
+            statusLabel.setText("Ejecutando Gen " + currentGeneration);
+            generationLabel.setText(String.valueOf(currentGeneration));
+            strategyLabel.setText(MazeAI.describeOrder(currentStrategy.directionOrder()));
+        });
+
+        int delay = (int) speedSlider.getValue();
+
+        currentHandle = Main.startSimulation(currentStrategy, delay, true, new Main.SimulationListener() {
             @Override
             public void onLog(String message) {
                 Platform.runLater(() -> appendLog(message));
@@ -346,22 +347,16 @@ public class Interfaz extends Application {
 
             @Override
             public void onAgentStarted(int agentId, String threadName, Main.Position start) {
-                Platform.runLater(() -> {
-                    agentThreadLabels.get(agentId).setText("Hilo: " + threadName);
-                    agentStateLabels.get(agentId).setText("Estado: activo");
-                    appendLog("[" + threadName + "] agente " + agentId + " listo en " + start);
-                });
+                Platform.runLater(() -> appendLog("Agente " + agentId + " iniciado en " + start));
             }
 
             @Override
             public void onAgentVisited(int agentId, Main.Position position) {
                 Platform.runLater(() -> {
-                    // Mover el marcador del agente
                     Circle marker = agents.get(agentId);
                     GridPane.setColumnIndex(marker, position.col());
                     GridPane.setRowIndex(marker, position.row());
 
-                    // Pintar la celda visitada con el color del agente (semitransparente)
                     if (Main.MAZE[position.row()][position.col()] == 0) {
                         cells[position.row()][position.col()]
                                 .setFill(AGENT_COLORS[agentId - 1].deriveColor(0, 1, 1, 0.35));
@@ -371,24 +366,12 @@ public class Interfaz extends Application {
 
             @Override
             public void onAgentFinished(int agentId, boolean found, int visitedCount) {
-                Platform.runLater(() ->
-                    agentStateLabels.get(agentId)
-                            .setText(found ? "Estado: salida encontrada" : "Estado: finalizado")
-                );
+                Platform.runLater(() -> appendLog("Agente " + agentId + (found ? " encontró la salida" : " se detuvo")));
             }
 
             @Override
-            public void onAiDecision(int agentId, String decision, int generation, double fitness) {
-                Platform.runLater(() -> {
-                    aiDecisionLabel.setText("A" + agentId + " gen " + generation + " | " + decision);
-                    appendLog("IA A" + agentId + " -> " + decision + " | fitness " + String.format("%.2f", fitness));
-                });
-            }
+            public void onAiDecision(int agentId, String decision, int generation, double fitness) {}
 
-            /**
-             * Única fuente de verdad para actualizar métricas y el contador de agentes activos.
-             * (Se eliminó la actualización duplicada que había en onAgentFinished.)
-             */
             @Override
             public void onMetricsUpdated(Main.MetricsSnapshot snapshot) {
                 Platform.runLater(() -> {
@@ -396,92 +379,135 @@ public class Interfaz extends Application {
                     stepsLabel.setText(String.valueOf(snapshot.totalVisits()));
                     activeLabel.setText(String.valueOf(snapshot.activeAgents()));
                     elapsedLabel.setText(snapshot.elapsedMillis() + " ms");
-                    throughputLabel.setText(String.format("%.1f pasos/s", snapshot.throughput()));
-
-                    double latency = snapshot.totalVisits() > 0
-                            ? (double) snapshot.elapsedMillis() / snapshot.totalVisits()
-                            : 0.0;
-                    latencyLabel.setText(String.format("%.1f ms/paso", latency));
-                    modeLabel.setText(snapshot.aiEnabled() ? "Modo: IA activa" : "Modo: base");
-                    summaryLabel.setText(snapshot.modeName()
-                            + " | gen "  + snapshot.generation()
-                            + " | fit "  + String.format("%.2f", snapshot.fitness()));
-
-                    int tick = chartTick.incrementAndGet();
-                    addChartPoint(throughputSeries, tick, snapshot.throughput());
-                    addChartPoint(latencySeries,    tick, latency);
                 });
             }
 
             @Override
             public void onSimulationFinished(Main.SimulationSummary summary) {
                 Platform.runLater(() -> {
-                    boolean userStopped = stopRequestedByUser;
-                    currentHandle        = null;
-                    stopRequestedByUser  = false;
-                    startButton.setDisable(false);
-                    stopButton.setDisable(true);
-                    aiToggle.setDisable(false);
-
-                    if (userStopped && !summary.found()) {
-                        statusLabel.setText("Simulación detenida");
-                        appendLog("Simulación detenida por el usuario");
+                    if (summary.found()) {
+                        statusLabel.setText("¡Solución Encontrada!");
+                        appendLog("¡Éxito! Salida encontrada en la Generación " + currentGeneration);
+                        finishSimulationFlow(true);
                     } else {
-                        statusLabel.setText(summary.found() ? "Salida encontrada" : "Sin salida");
-                        appendLog("Simulación terminada | modo=" + summary.modeName()
-                                + " | tiempo=" + summary.elapsedMillis() + " ms");
-                    }
+                        if (stopRequestedByUser) {
+                            statusLabel.setText("Detenido");
+                            appendLog("Simulación detenida por el usuario.");
+                            finishSimulationFlow(false);
+                        } else {
+                            appendLog("Generación " + currentGeneration + " no encontró la salida. Evolucionando...");
+                            // Evolucionar población
+                            currentPopulation = MazeAI.evolve(currentPopulation, Main.MAZE, Main.STARTS, random);
+                            currentGeneration++;
+                            currentStrategy = MazeAI.getBestStrategy(currentPopulation, Main.MAZE, Main.STARTS, currentGeneration);
 
-                    updateComparison(summary);
+                            // Reiniciar tablero visualmente y lanzar la siguiente generación
+                            resetBoardVisually();
+                            runGeneration();
+                        }
+                    }
                 });
             }
         });
+    }
 
-        // Actualizar estado de la UI al iniciar
-        stopRequestedByUser = false;
-        aiToggle.setDisable(true);
-        startButton.setDisable(true);
-        stopButton.setDisable(false);
-        statusLabel.setText(aiEnabled ? "Ejecutando con IA" : "Ejecutando en modo base");
-        finishedAgents.set(0);
-        activeLabel.setText(String.valueOf(Main.STARTS.length));
-        modeLabel.setText(aiEnabled ? "Modo: IA activa" : "Modo: base");
+    private void runSingleSimulation() {
+        Platform.runLater(() -> {
+            statusLabel.setText("Ejecutando simulación...");
+            generationLabel.setText("-");
+            strategyLabel.setText(MazeAI.describeOrder(currentStrategy.directionOrder()));
+        });
+
+        int delay = (int) speedSlider.getValue();
+
+        currentHandle = Main.startSimulation(currentStrategy, delay, false, new Main.SimulationListener() {
+            @Override
+            public void onLog(String message) {
+                Platform.runLater(() -> appendLog(message));
+            }
+
+            @Override
+            public void onAgentStarted(int agentId, String threadName, Main.Position start) {}
+
+            @Override
+            public void onAgentVisited(int agentId, Main.Position position) {
+                Platform.runLater(() -> {
+                    Circle marker = agents.get(agentId);
+                    GridPane.setColumnIndex(marker, position.col());
+                    GridPane.setRowIndex(marker, position.row());
+
+                    if (Main.MAZE[position.row()][position.col()] == 0) {
+                        cells[position.row()][position.col()]
+                                .setFill(AGENT_COLORS[agentId - 1].deriveColor(0, 1, 1, 0.35));
+                    }
+                });
+            }
+
+            @Override
+            public void onAgentFinished(int agentId, boolean found, int visitedCount) {}
+
+            @Override
+            public void onAiDecision(int agentId, String decision, int generation, double fitness) {}
+
+            @Override
+            public void onMetricsUpdated(Main.MetricsSnapshot snapshot) {
+                Platform.runLater(() -> {
+                    totalVisits.set(snapshot.totalVisits());
+                    stepsLabel.setText(String.valueOf(snapshot.totalVisits()));
+                    activeLabel.setText(String.valueOf(snapshot.activeAgents()));
+                    elapsedLabel.setText(snapshot.elapsedMillis() + " ms");
+                });
+            }
+
+            @Override
+            public void onSimulationFinished(Main.SimulationSummary summary) {
+                Platform.runLater(() -> {
+                    if (summary.found()) {
+                        statusLabel.setText("¡Salida Encontrada!");
+                        appendLog("¡Éxito! Salida encontrada sin IA.");
+                    } else {
+                        statusLabel.setText(stopRequestedByUser ? "Detenido" : "Sin salida");
+                        appendLog(stopRequestedByUser ? "Simulación detenida." : "Los agentes se atascaron y no encontraron la salida.");
+                    }
+                    finishSimulationFlow(summary.found());
+                });
+            }
+        });
     }
 
     private void stopSimulation() {
         stopRequestedByUser = true;
-        statusLabel.setText("Deteniendo simulación...");
+        statusLabel.setText("Deteniendo...");
         if (currentHandle != null) currentHandle.stop();
     }
 
+    private void finishSimulationFlow(boolean found) {
+        currentHandle = null;
+        startButton.setDisable(false);
+        stopButton.setDisable(true);
+        generateButton.setDisable(false);
+        aiToggle.setDisable(false);
+    }
+
     // ─────────────────────────────────────────────
-    //  Helpers de UI
+    //  Helpers de UI e inicialización
     // ─────────────────────────────────────────────
 
-    /** Restaura el tablero a su estado inicial (sin visitas ni agentes en movimiento). */
     private void resetBoard() {
         totalVisits.set(0);
-        finishedAgents.set(0);
-        chartTick.set(0);
-
         stepsLabel.setText("0");
         activeLabel.setText("0");
         elapsedLabel.setText("0 ms");
-        throughputLabel.setText("0.0 pasos/s");
-        latencyLabel.setText("0.0 ms/paso");
-        aiDecisionLabel.setText("-");
-        summaryLabel.setText("-");
+        generationLabel.setText("0");
+        strategyLabel.setText("-");
         statusLabel.setText("Listo");
-
-        if (aiToggle != null) {
-            modeLabel.setText(aiToggle.isSelected() ? "Modo: IA activa" : "Modo: base");
-        }
-
         logArea.clear();
-        throughputSeries.getData().clear();
-        latencySeries.getData().clear();
-        comparisonSeries.getData().clear();
 
+        resetBoardVisually();
+    }
+
+    /** Restaura marcadores y limpia celdas pintadas conservando el log y contadores globales del flujo */
+    private void resetBoardVisually() {
         // Restaurar colores de celdas
         for (int row = 0; row < Main.MAZE.length; row++) {
             for (int col = 0; col < Main.MAZE[row].length; col++) {
@@ -491,33 +517,10 @@ public class Interfaz extends Application {
 
         // Restaurar posiciones iniciales de los marcadores
         for (int i = 0; i < Main.STARTS.length; i++) {
-            Circle        marker = agents.get(i + 1);
-            Main.Position start  = Main.STARTS[i];
+            Circle marker = agents.get(i + 1);
+            Main.Position start = Main.STARTS[i];
             GridPane.setColumnIndex(marker, start.col());
             GridPane.setRowIndex(marker, start.row());
-            agentThreadLabels.get(i + 1).setText("Hilo: -");
-            agentStateLabels.get(i + 1).setText("Estado: listo");
-        }
-    }
-
-    /** Actualiza el BarChart de comparación con los tiempos de la última ejecución de cada modo. */
-    private void updateComparison(Main.SimulationSummary summary) {
-        if (summary.aiEnabled()) {
-            lastAiMillis    = summary.elapsedMillis();
-        } else {
-            lastPlainMillis = summary.elapsedMillis();
-        }
-
-        comparisonSeries.getData().clear();
-        if (lastPlainMillis >= 0) comparisonSeries.getData().add(new XYChart.Data<>("Sin IA", lastPlainMillis));
-        if (lastAiMillis    >= 0) comparisonSeries.getData().add(new XYChart.Data<>("IA",     lastAiMillis));
-    }
-
-    /** Agrega un punto al gráfico de líneas y limita el historial a MAX_CHART_POINTS. */
-    private void addChartPoint(XYChart.Series<Number, Number> series, Number x, Number y) {
-        series.getData().add(new XYChart.Data<>(x, y));
-        if (series.getData().size() > MAX_CHART_POINTS) {
-            series.getData().remove(0);
         }
     }
 
@@ -525,30 +528,11 @@ public class Interfaz extends Application {
         logArea.appendText(message + "\n");
     }
 
-    // ─────────────────────────────────────────────
-    //  Helpers de estilo
-    // ─────────────────────────────────────────────
-
     private Label header(String text) {
         Label label = new Label(text);
         label.setTextFill(Color.WHITE);
         label.setStyle("-fx-font-size: 15px; -fx-font-weight: bold;");
         return label;
-    }
-
-    private HBox metricLine(String name, Label valueLabel) {
-        Label label = new Label(name + ":");
-        label.setTextFill(Color.web("#cbd5e1"));
-        valueLabel.setTextFill(Color.web("#ffffff"));
-        HBox row = new HBox(8, label, valueLabel);
-        row.setAlignment(Pos.CENTER_LEFT);
-        return row;
-    }
-
-    private Region spacer() {
-        Region region = new Region();
-        HBox.setHgrow(region, Priority.ALWAYS);
-        return region;
     }
 
     private Color colorForCell(int value) {
@@ -558,17 +542,6 @@ public class Interfaz extends Application {
             default -> Color.web("#e2e8f0");  // libre
         };
     }
-
-    private String toWeb(Color color) {
-        return String.format("rgba(%d,%d,%d,1)",
-                (int) Math.round(color.getRed()   * 255),
-                (int) Math.round(color.getGreen() * 255),
-                (int) Math.round(color.getBlue()  * 255));
-    }
-
-    // ─────────────────────────────────────────────
-    //  main (alternativo al launch desde Main)
-    // ─────────────────────────────────────────────
 
     public static void main(String[] args) {
         launch(args);

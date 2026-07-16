@@ -6,7 +6,7 @@ import java.util.Random;
  * MazeAI — Lógica del algoritmo genético (GA).
  *
  * Responsabilidades:
- *   - Definir y entrenar estrategias de dirección mediante GA.
+ *   - Definir y entrenar estrategias de dirección mediante GA de forma interactiva.
  *   - Evaluar el fitness de cada individuo simulando su recorrido.
  *   - Proveer la estrategia base (sin IA) como punto de comparación.
  */
@@ -63,57 +63,75 @@ public final class MazeAI {
     }
 
     /**
-     * Entrena un individuo mediante algoritmo genético (4 generaciones)
-     * y devuelve la mejor estrategia encontrada.
+     * Inicializa una población de permutaciones de tamaño `size` de manera aleatoria y sin duplicados.
      */
-    public static Strategy train(int[][] maze, Main.Position[] starts) {
-        Random random = new Random();
-
-        // ── Población inicial (permutaciones manuales de {0,1,2,3}) ──
+    public static List<int[]> initializePopulation(int size, Random random) {
         List<int[]> population = new ArrayList<>();
-        population.add(new int[]{1, 3, 2, 0});
-        population.add(new int[]{3, 1, 0, 2});
-        population.add(new int[]{1, 0, 3, 2});
-        population.add(new int[]{3, 0, 1, 2});
-        population.add(new int[]{1, 3, 0, 2});
-        population.add(new int[]{0, 1, 3, 2});
-
-        int[]  bestOrder   = population.get(0).clone();
-        double bestFitness = Double.NEGATIVE_INFINITY;
-
-        // ── Ciclo evolutivo ──
-        for (int generation = 1; generation <= 4; generation++) {
-
-            // Ordenar población de mayor a menor fitness
-            population.sort((left, right) -> Double.compare(
-                    evaluate(right, maze, starts),
-                    evaluate(left,  maze, starts)));
-
-            double currentFitness = evaluate(population.get(0), maze, starts);
-            if (currentFitness > bestFitness) {
-                bestFitness = currentFitness;
-                bestOrder   = population.get(0).clone();
+        while (population.size() < size) {
+            int[] order = {0, 1, 2, 3};
+            // Mezclar (Fisher-Yates)
+            for (int i = order.length - 1; i > 0; i--) {
+                int j = random.nextInt(i + 1);
+                int temp = order[i];
+                order[i] = order[j];
+                order[j] = temp;
             }
-
-            // Elitismo: los dos mejores pasan directamente
-            List<int[]> nextGeneration = new ArrayList<>();
-            nextGeneration.add(population.get(0).clone());
-            nextGeneration.add(population.get(1).clone());
-
-            // Crossover + mutación hasta completar la población
-            while (nextGeneration.size() < population.size()) {
-                int[] child = crossover(
-                        population.get(random.nextInt(2)),
-                        population.get(random.nextInt(2)),
-                        random);
-                mutate(child, random);
-                nextGeneration.add(child);
+            // Verificar si ya existe en la población
+            boolean exists = false;
+            for (int[] existing : population) {
+                if (java.util.Arrays.equals(existing, order)) {
+                    exists = true;
+                    break;
+                }
             }
+            if (!exists) {
+                population.add(order);
+            }
+        }
+        return population;
+    }
 
-            population = nextGeneration;
+    /**
+     * Evoluciona la población a la siguiente generación mediante ordenamiento de fitness,
+     * elitismo, crossover y mutación.
+     */
+    public static List<int[]> evolve(List<int[]> population, int[][] maze, Main.Position[] starts, Random random) {
+        // Ordenar población de mayor a menor fitness
+        population.sort((left, right) -> Double.compare(
+                evaluate(right, maze, starts),
+                evaluate(left,  maze, starts)));
+
+        List<int[]> nextGeneration = new ArrayList<>();
+        // Elitismo: los dos mejores pasan directamente
+        nextGeneration.add(population.get(0).clone());
+        nextGeneration.add(population.get(1).clone());
+
+        // Crossover + mutación hasta completar la población
+        while (nextGeneration.size() < population.size()) {
+            int[] child = crossover(
+                    population.get(random.nextInt(2)),
+                    population.get(random.nextInt(2)),
+                    random);
+            mutate(child, random);
+            nextGeneration.add(child);
         }
 
-        return new Strategy("Heuristica adaptativa", 4, bestFitness, bestOrder);
+        return nextGeneration;
+    }
+
+    /**
+     * Devuelve la mejor estrategia de la población actual.
+     */
+    public static Strategy getBestStrategy(List<int[]> population, int[][] maze, Main.Position[] starts, int generation) {
+        // Ordenar primero para garantizar que el mejor está en el índice 0
+        population.sort((left, right) -> Double.compare(
+                evaluate(right, maze, starts),
+                evaluate(left,  maze, starts)));
+        
+        int[] bestOrder = population.get(0).clone();
+        double bestFitness = evaluate(bestOrder, maze, starts);
+
+        return new Strategy("Heurística adaptativa", generation, bestFitness, bestOrder);
     }
 
     /**
@@ -136,7 +154,7 @@ public final class MazeAI {
     /**
      * Fitness promedio de un individuo evaluado desde todos los puntos de inicio.
      */
-    private static double evaluate(int[] order, int[][] maze, Main.Position[] starts) {
+    public static double evaluate(int[] order, int[][] maze, Main.Position[] starts) {
         double total = 0.0;
         for (Main.Position start : starts) {
             total += simulate(order, maze, start);
@@ -147,16 +165,6 @@ public final class MazeAI {
     /**
      * Simula el recorrido greedy (sin backtracking) de un individuo
      * desde un punto de inicio y devuelve su puntuación.
-     *
-     * Criterios de fitness:
-     *   +150  llegar a la salida (9)
-     *   +2    por celda nueva visitada
-     *   +1    por movimiento válido
-     *   -3    revisitar una celda
-     *   -8    quedarse sin movimientos
-     *   -15   chocar contra una pared
-     *   -20   salir de los límites
-     *   -dist distancia Manhattan final a la salida
      */
     private static double simulate(int[] order, int[][] maze, Main.Position start) {
         boolean[][] visited = new boolean[maze.length][maze[0].length];

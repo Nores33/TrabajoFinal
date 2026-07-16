@@ -1,5 +1,6 @@
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Random;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -17,6 +18,7 @@ import javafx.application.Application;
  *   - Gestionar el ciclo de vida de la simulación (start / stop).
  *   - Coordinar los agentes concurrentes mediante ExecutorService.
  *   - Notificar eventos a la interfaz a través de SimulationListener.
+ *   - Proveer un generador dinámico de laberintos.
  */
 public class Main {
 
@@ -59,7 +61,7 @@ public class Main {
     // ─────────────────────────────────────────────
 
     /**
-     * Matriz 15×15.
+     * Matriz 15×15. Modificable en sus elementos internos para generación dinámica.
      *   0 = celda libre
      *   1 = pared
      *   9 = salida (esquina inferior derecha)
@@ -88,6 +90,88 @@ public class Main {
         new Position(0, 1),
         new Position(2, 0)
     };
+
+    // ─────────────────────────────────────────────
+    //  Generación dinámica de laberintos (DFS + Braiding)
+    // ─────────────────────────────────────────────
+
+    /**
+     * Genera un nuevo laberinto aleatorio aseguranzo que sea resoluble desde todos los inicios.
+     */
+    public static void generateNewMaze(Random random) {
+        do {
+            // 1. Llenar todo de paredes (1)
+            for (int r = 0; r < MAZE.length; r++) {
+                for (int c = 0; c < MAZE[r].length; c++) {
+                    MAZE[r][c] = 1;
+                }
+            }
+            // 2. Carve desde (0, 0)
+            carve(0, 0, random);
+
+            // 3. Quitar algunas paredes aleatoriamente (braiding - 25% de probabilidad)
+            for (int r = 1; r < MAZE.length - 1; r++) {
+                for (int c = 1; c < MAZE[r].length - 1; c++) {
+                    if (MAZE[r][c] == 1) {
+                        if (random.nextDouble() < 0.25) {
+                            MAZE[r][c] = 0;
+                        }
+                    }
+                }
+            }
+
+            // 4. Asegurar salidas y entradas libres
+            for (Position start : STARTS) {
+                MAZE[start.row()][start.col()] = 0;
+            }
+            MAZE[MAZE.length - 1][MAZE[0].length - 1] = 9;
+
+        } while (!isSolvable());
+    }
+
+    private static void carve(int r, int c, Random random) {
+        MAZE[r][c] = 0;
+        int[][] directions = {{0, 2}, {2, 0}, {0, -2}, {-2, 0}};
+        
+        // Mezclar direcciones (Fisher-Yates)
+        for (int i = directions.length - 1; i > 0; i--) {
+            int j = random.nextInt(i + 1);
+            int[] temp = directions[i];
+            directions[i] = directions[j];
+            directions[j] = temp;
+        }
+
+        for (int[] d : directions) {
+            int nr = r + d[0];
+            int nc = c + d[1];
+            if (nr >= 0 && nr < MAZE.length && nc >= 0 && nc < MAZE[0].length) {
+                if (MAZE[nr][nc] == 1) {
+                    MAZE[r + d[0]/2][c + d[1]/2] = 0;
+                    carve(nr, nc, random);
+                }
+            }
+        }
+    }
+
+    public static boolean isSolvable() {
+        for (Position start : STARTS) {
+            if (!canReachExit(start.row(), start.col(), new boolean[MAZE.length][MAZE[0].length])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean canReachExit(int r, int c, boolean[][] visited) {
+        if (r < 0 || c < 0 || r >= MAZE.length || c >= MAZE[0].length) return false;
+        if (MAZE[r][c] == 1 || visited[r][c]) return false;
+        if (MAZE[r][c] == 9) return true;
+        visited[r][c] = true;
+        return canReachExit(r + 1, c, visited) ||
+               canReachExit(r - 1, c, visited) ||
+               canReachExit(r, c + 1, visited) ||
+               canReachExit(r, c - 1, visited);
+    }
 
     // ─────────────────────────────────────────────
     //  Contratos de comunicación (interfaces/records)
@@ -160,9 +244,8 @@ public class Main {
     /**
      * MazeAgent — hilo de exploración del laberinto.
      *
-     * Cada agente recorre el laberinto con DFS usando el orden de
-     * direcciones provisto por la estrategia del GA (o la línea base).
-     * Comparte con los demás agentes los flags exitFound y stopRequested.
+     * Cada agente recorre el laberinto de forma codiciosa (greedy, sin backtracking)
+     * utilizando el orden de prioridad provisto por el algoritmo genético.
      */
     static class MazeAgent implements Callable<Boolean> {
 
@@ -181,6 +264,7 @@ public class Main {
         private final double               fitness;
         private final boolean              aiEnabled;
         private final MetricsUpdater       metricsUpdater;
+        private final int                  delay;
 
         // Estado interno del agente (no compartido)
         private final boolean[][]          visited;
@@ -191,7 +275,7 @@ public class Main {
                          AtomicInteger activeAgents, AtomicInteger totalVisits,
                          int[] directionOrder, String strategyName,
                          int generation, double fitness, boolean aiEnabled,
-                         MetricsUpdater metricsUpdater) {
+                         MetricsUpdater metricsUpdater, int delay) {
             this.maze           = maze;
             this.start          = start;
             this.agentId        = agentId;
@@ -206,6 +290,7 @@ public class Main {
             this.fitness        = fitness;
             this.aiEnabled      = aiEnabled;
             this.metricsUpdater = metricsUpdater;
+            this.delay          = delay;
             this.visited        = new boolean[maze.length][maze[0].length];
         }
 
@@ -222,11 +307,6 @@ public class Main {
                     listener.onAgentStarted(agentId, threadName, start);
                     listener.onLog("[" + threadName + "] Agente " + agentId
                             + " inicia en (" + start.row() + "," + start.col() + ")");
-                    if (aiEnabled) {
-                        listener.onAiDecision(agentId,
-                                "Estrategia " + strategyName + " | orden " + MazeAI.describeOrder(directionOrder),
-                                generation, fitness);
-                    }
                 }
 
                 found = explore(start.row(), start.col());
@@ -242,60 +322,74 @@ public class Main {
         }
 
         /**
-         * DFS recursivo.
-         * Se detiene ante: interrupción, stop externo, salida ya encontrada,
-         * límites del laberinto, pared o celda ya visitada.
+         * Exploración codiciosa (greedy) sin backtracking.
+         * Sigue el orden de prioridad estricto indicado por directionOrder.
          */
         private boolean explore(int r, int c) {
-            if (Thread.currentThread().isInterrupted() || stopRequested.get() || exitFound.get())
-                return false;
-            if (r < 0 || c < 0 || r >= maze.length || c >= maze[0].length)
-                return false;
-            if (maze[r][c] == 1 || visited[r][c])
-                return false;
+            while (true) {
+                if (Thread.currentThread().isInterrupted() || stopRequested.get() || exitFound.get())
+                    return false;
+                if (r < 0 || c < 0 || r >= maze.length || c >= maze[0].length)
+                    return false;
+                if (maze[r][c] == 1 || visited[r][c])
+                    return false;
 
-            // Marcar visita
-            visited[r][c] = true;
-            visitedCount++;
-            totalVisits.incrementAndGet();
+                // Marcar visita
+                visited[r][c] = true;
+                visitedCount++;
+                totalVisits.incrementAndGet();
 
-            if (listener != null) {
-                listener.onAgentVisited(agentId, new Position(r, c));
-                listener.onLog("Agente " + agentId + " visita (" + r + "," + c + ")");
-            }
-            notifyMetrics();
-
-            if (aiEnabled && listener != null) {
-                listener.onAiDecision(agentId,
-                        "Prioridad " + MazeAI.describeOrder(directionOrder) + " en (" + r + "," + c + ")",
-                        generation, fitness);
-            }
-
-            // Comprobar si es la salida
-            if (maze[r][c] == 9) {
-                exitFound.set(true);
                 if (listener != null) {
-                    listener.onLog("Agente " + agentId + " encuentra la salida");
+                    listener.onAgentVisited(agentId, new Position(r, c));
+                    listener.onLog("Agente " + agentId + " visita (" + r + "," + c + ")");
                 }
-                return true;
-            }
+                notifyMetrics();
 
-            // Pausa visual entre pasos
-            try {
-                Thread.sleep(90);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return false;
-            }
+                if (aiEnabled && listener != null) {
+                    listener.onAiDecision(agentId,
+                            "Prioridad " + MazeAI.describeOrder(directionOrder) + " en (" + r + "," + c + ")",
+                            generation, fitness);
+                }
 
-            // Expandir vecinos en el orden de la estrategia
-            for (int direction : directionOrder) {
-                int nextRow = r + MazeAI.DIRECTIONS[direction][0];
-                int nextCol = c + MazeAI.DIRECTIONS[direction][1];
-                if (explore(nextRow, nextCol)) return true;
-            }
+                // Comprobar si es la salida
+                if (maze[r][c] == 9) {
+                    exitFound.set(true);
+                    if (listener != null) {
+                        listener.onLog("Agente " + agentId + " encuentra la salida");
+                    }
+                    return true;
+                }
 
-            return false;
+                // Pausa visual entre pasos
+                try {
+                    Thread.sleep(delay);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+
+                // Expandir vecino en el orden de la estrategia
+                boolean moved = false;
+                for (int direction : directionOrder) {
+                    int nextRow = r + MazeAI.DIRECTIONS[direction][0];
+                    int nextCol = c + MazeAI.DIRECTIONS[direction][1];
+
+                    if (nextRow < 0 || nextCol < 0 || nextRow >= maze.length || nextCol >= maze[0].length) continue;
+                    if (maze[nextRow][nextCol] == 1 || visited[nextRow][nextCol]) continue;
+
+                    r = nextRow;
+                    c = nextCol;
+                    moved = true;
+                    break;
+                }
+
+                if (!moved) {
+                    if (listener != null) {
+                        listener.onLog("Agente " + agentId + " se queda atascado en (" + r + "," + c + ")");
+                    }
+                    return false;
+                }
+            }
         }
 
         private void notifyMetrics() {
@@ -308,13 +402,9 @@ public class Main {
     // ─────────────────────────────────────────────
 
     /**
-     * Inicia la simulación con tres agentes concurrentes.
-     *
-     * @param aiEnabled  true → usa estrategia entrenada por GA; false → estrategia base
-     * @param listener   receptor de eventos para la UI (puede ser null en tests)
-     * @return handle que permite detener la simulación desde el exterior
+     * Inicia la simulación con tres agentes concurrentes usando la estrategia dada.
      */
-    public static SimulationHandle startSimulation(boolean aiEnabled, SimulationListener listener) {
+    public static SimulationHandle startSimulation(MazeAI.Strategy strategy, int delay, boolean aiEnabled, SimulationListener listener) {
         ExecutorService executor      = Executors.newFixedThreadPool(3);
         AtomicBoolean   exitFound     = new AtomicBoolean(false);
         AtomicBoolean   stopRequested = new AtomicBoolean(false);
@@ -322,11 +412,8 @@ public class Main {
         AtomicInteger   totalVisits   = new AtomicInteger(0);
         long            startTime     = System.currentTimeMillis();
 
-        // Entrenar (o usar línea base) antes de lanzar los agentes
-        MazeAI.Strategy strategy = aiEnabled ? MazeAI.train(MAZE, STARTS) : MazeAI.baseline();
-
         if (listener != null) {
-            listener.onLog((aiEnabled ? "IA activada" : "Modo base")
+            listener.onLog((aiEnabled ? "Generación " + strategy.generation() : "Modo base")
                     + " | estrategia " + strategy.name()
                     + " | fitness "    + String.format("%.2f", strategy.fitness()));
         }
@@ -351,15 +438,15 @@ public class Main {
         // Crear y lanzar los tres agentes
         MazeAgent agent1 = new MazeAgent(MAZE, STARTS[0], 1, listener, exitFound, stopRequested,
                 activeAgents, totalVisits, strategy.directionOrder(), strategy.name(),
-                strategy.generation(), strategy.fitness(), aiEnabled, metricsUpdater);
+                strategy.generation(), strategy.fitness(), aiEnabled, metricsUpdater, delay);
 
         MazeAgent agent2 = new MazeAgent(MAZE, STARTS[1], 2, listener, exitFound, stopRequested,
                 activeAgents, totalVisits, strategy.directionOrder(), strategy.name(),
-                strategy.generation(), strategy.fitness(), aiEnabled, metricsUpdater);
+                strategy.generation(), strategy.fitness(), aiEnabled, metricsUpdater, delay);
 
         MazeAgent agent3 = new MazeAgent(MAZE, STARTS[2], 3, listener, exitFound, stopRequested,
                 activeAgents, totalVisits, strategy.directionOrder(), strategy.name(),
-                strategy.generation(), strategy.fitness(), aiEnabled, metricsUpdater);
+                strategy.generation(), strategy.fitness(), aiEnabled, metricsUpdater, delay);
 
         List<Future<Boolean>> futures = new ArrayList<>();
         futures.add(executor.submit(agent1));
