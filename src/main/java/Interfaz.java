@@ -121,7 +121,7 @@ public class Interfaz extends Application {
         HBox.setHgrow(mazeScroll, Priority.ALWAYS);
         root.setCenter(content);
 
-        Scene scene = new Scene(root, 1180, 680);
+        Scene scene = new Scene(root, 1200, 800);
         stage.setTitle("Laberinto Concurrente - Aprendizaje Evolutivo");
         stage.setScene(scene);
         stage.show();
