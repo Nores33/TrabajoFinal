@@ -25,11 +25,11 @@ public final class MazeAI {
     };
 
     /** Mapeo índice → dirección tipada, usado para describir órdenes. */
-    private static final Main.Direction[] ORDER = {
-            Main.Direction.UP,
-            Main.Direction.DOWN,
-            Main.Direction.LEFT,
-            Main.Direction.RIGHT
+    private static final Direction[] ORDER = {
+            Direction.UP,
+            Direction.DOWN,
+            Direction.LEFT,
+            Direction.RIGHT
     };
 
     /** Clase de utilidad — no instanciable. */
@@ -57,9 +57,9 @@ public final class MazeAI {
     //  API pública
     // ─────────────────────────────────────────────
 
-    /** Estrategia fija sin entrenamiento, usada en modo "sin IA". */
+    /** Identifica el modo "sin IA", que explora por búsqueda en profundidad (DFS) con backtracking. */
     public static Strategy baseline() {
-        return new Strategy("Base", 0, 0.0, new int[]{1, 3, 2, 0});
+        return new Strategy("Búsqueda en Profundidad (DFS)", 0, 0.0, new int[]{1, 0, 3, 2});
     }
 
     /**
@@ -95,7 +95,7 @@ public final class MazeAI {
      * Evoluciona la población a la siguiente generación mediante ordenamiento de fitness,
      * elitismo, crossover y mutación.
      */
-    public static List<int[]> evolve(List<int[]> population, int[][] maze, Main.Position[] starts, Random random) {
+    public static List<int[]> evolve(List<int[]> population, int[][] maze, Position[] starts, Random random) {
         // Ordenar población de mayor a menor fitness
         population.sort((left, right) -> Double.compare(
                 evaluate(right, maze, starts),
@@ -122,7 +122,7 @@ public final class MazeAI {
     /**
      * Devuelve la mejor estrategia de la población actual.
      */
-    public static Strategy getBestStrategy(List<int[]> population, int[][] maze, Main.Position[] starts, int generation) {
+    public static Strategy getBestStrategy(List<int[]> population, int[][] maze, Position[] starts, int generation) {
         // Ordenar primero para garantizar que el mejor está en el índice 0
         population.sort((left, right) -> Double.compare(
                 evaluate(right, maze, starts),
@@ -151,12 +151,14 @@ public final class MazeAI {
     //  Lógica interna del GA
     // ─────────────────────────────────────────────
 
+    // ── Función de fitness ──
+
     /**
      * Fitness promedio de un individuo evaluado desde todos los puntos de inicio.
      */
-    public static double evaluate(int[] order, int[][] maze, Main.Position[] starts) {
+    public static double evaluate(int[] order, int[][] maze, Position[] starts) {
         double total = 0.0;
-        for (Main.Position start : starts) {
+        for (Position start : starts) {
             total += simulate(order, maze, start);
         }
         return total / starts.length;
@@ -166,7 +168,7 @@ public final class MazeAI {
      * Simula el recorrido greedy (sin backtracking) de un individuo
      * desde un punto de inicio y devuelve su puntuación.
      */
-    private static double simulate(int[] order, int[][] maze, Main.Position start) {
+    private static double simulate(int[] order, int[][] maze, Position start) {
         boolean[][] visited = new boolean[maze.length][maze[0].length];
         int    row   = start.row();
         int    col   = start.col();
@@ -208,6 +210,8 @@ public final class MazeAI {
         score -= Math.abs(exitRow - row) + Math.abs(exitCol - col);
         return score;
     }
+
+    // ── Operadores genéticos (crossover y mutación) ──
 
     /**
      * Crossover de orden preservado (OX):
